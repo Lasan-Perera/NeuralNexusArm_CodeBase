@@ -54,9 +54,16 @@ typedef struct {
 
     uint32_t stepInterval;
     uint32_t stepCounter;
+
+    GPIO_TypeDef* STEP_Port;
+    uint16_t STEP_Pin;
+
+    GPIO_TypeDef* DIR_Port;
+    uint16_t DIR_Pin;
+
 } Stepper_t;
 
-Stepper_t motor1;
+Stepper_t motors[6];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -65,8 +72,9 @@ static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
-void Stepper_Init(Stepper_t *m);
+void Stepper_InitAll(void);
 void Stepper_Update(Stepper_t *m);
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 
 /* USER CODE END PFP */
 
@@ -109,7 +117,7 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-  Stepper_Init(&motor1);
+  Stepper_InitAll();
   HAL_TIM_Base_Start_IT(&htim6);
 
   /* USER CODE END 2 */
@@ -283,19 +291,57 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void Stepper_Init(Stepper_t *m)
+void Stepper_InitAll(void)
 {
-    m->position = 0;
-    m->target = 100000;
+    // Motor 1
+    motors[0].STEP_Port = M1_Step_GPIO_Port;
+    motors[0].STEP_Pin  = M1_Step_Pin;
+    motors[0].DIR_Port  = M1_Dir_GPIO_Port;
+    motors[0].DIR_Pin   = M1_Dir_Pin;
 
-    m->speed = 0;
-    m->maxSpeed = 10000;
-    m->acceleration = 3000;
+    // Motor 2
+    motors[1].STEP_Port = M2_Step_GPIO_Port;
+    motors[1].STEP_Pin  = M2_Step_Pin;
+    motors[1].DIR_Port  = M2_Dir_GPIO_Port;
+    motors[1].DIR_Pin   = M2_Dir_Pin;
 
-    m->stepInterval = 1000;
-    m->stepCounter = 0;
+    // Motor 3
+    motors[2].STEP_Port = M3_Step_GPIO_Port;
+    motors[2].STEP_Pin  = M3_Step_Pin;
+    motors[2].DIR_Port  = M3_Dir_GPIO_Port;
+    motors[2].DIR_Pin   = M3_Dir_Pin;
+
+    // Motor 4
+    motors[3].STEP_Port = M4_Step_GPIO_Port;
+    motors[3].STEP_Pin  = M4_Step_Pin;
+    motors[3].DIR_Port  = M4_Dir_GPIO_Port;
+    motors[3].DIR_Pin   = M4_Dir_Pin;
+
+    // Motor 5
+    motors[4].STEP_Port = M5_Step_GPIO_Port;
+    motors[4].STEP_Pin  = M5_Step_Pin;
+    motors[4].DIR_Port  = M5_Dir_GPIO_Port;
+    motors[4].DIR_Pin   = M5_Dir_Pin;
+
+    // Motor 6
+    motors[5].STEP_Port = M6_Step_GPIO_Port;
+    motors[5].STEP_Pin  = M6_Step_Pin;
+    motors[5].DIR_Port  = M6_Dir_GPIO_Port;
+    motors[5].DIR_Pin   = M6_Dir_Pin;
+
+    for (int i = 0; i < 6; i++)
+    {
+        motors[i].position = 0;
+        motors[i].target = 2000 + i * 500;  // different distances for testing
+
+        motors[i].speed = 0;
+        motors[i].maxSpeed = 4000;
+        motors[i].acceleration = 4000;
+
+        motors[i].stepInterval = 1000;
+        motors[i].stepCounter = 0;
+    }
 }
-
 
 void Stepper_Update(Stepper_t *m)
 {
@@ -304,12 +350,10 @@ void Stepper_Update(Stepper_t *m)
     int32_t distance = m->target - m->position;
 
     // Direction
-    if (distance > 0)
-        HAL_GPIO_WritePin(M1_Dir_GPIO_Port, M1_Dir_Pin, GPIO_PIN_SET);
-    else
-        HAL_GPIO_WritePin(M1_Dir_GPIO_Port, M1_Dir_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(m->DIR_Port, m->DIR_Pin,
+                      (distance > 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-    float dt = 0.00002f; // 20us
+    float dt = 0.00002f;
 
     float stepsToStop = (m->speed * m->speed) / (2.0f * m->acceleration);
 
@@ -337,9 +381,9 @@ void Stepper_Update(Stepper_t *m)
     {
         m->stepCounter = 0;
 
-        HAL_GPIO_WritePin(M1_Step_GPIO_Port, M1_Step_Pin, GPIO_PIN_SET);
-        for (volatile int i = 0; i < 100; i++);  // crude delay
-        HAL_GPIO_WritePin(M1_Step_GPIO_Port, M1_Step_Pin, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_SET);
+        for (volatile int i = 0; i < 50; i++);
+        HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_RESET);
 
         if (distance > 0)
             m->position++;
@@ -352,7 +396,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
-        Stepper_Update(&motor1);
+        for (int i = 0; i < 6; i++)
+        {
+            Stepper_Update(&motors[i]);
+        }
     }
 }
 

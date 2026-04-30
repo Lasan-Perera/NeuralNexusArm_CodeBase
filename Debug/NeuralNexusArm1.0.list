@@ -933,7 +933,7 @@ void Stepper_Update(Stepper_t *m)
  8000876:	2201      	movs	r2, #1
  8000878:	4619      	mov	r1, r3
  800087a:	f000 fdd7 	bl	800142c <HAL_GPIO_WritePin>
-        for (volatile int i = 0; i < 50; i++);
+        for (volatile int i = 0; i < 200; i++);
  800087e:	2300      	movs	r3, #0
  8000880:	60bb      	str	r3, [r7, #8]
  8000882:	e002      	b.n	800088a <Stepper_Update+0x16e>
@@ -941,7 +941,7 @@ void Stepper_Update(Stepper_t *m)
  8000886:	3301      	adds	r3, #1
  8000888:	60bb      	str	r3, [r7, #8]
  800088a:	68bb      	ldr	r3, [r7, #8]
- 800088c:	2b31      	cmp	r3, #49	@ 0x31
+ 800088c:	2bc7      	cmp	r3, #199	@ 0xc7
  800088e:	ddf9      	ble.n	8000884 <Stepper_Update+0x168>
         HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_RESET);
  8000890:	687b      	ldr	r3, [r7, #4]

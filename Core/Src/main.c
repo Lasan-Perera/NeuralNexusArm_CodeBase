@@ -382,7 +382,7 @@ void Stepper_Update(Stepper_t *m)
         m->stepCounter = 0;
 
         HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_SET);
-        for (volatile int i = 0; i < 50; i++);
+        for (volatile int i = 0; i < 200; i++);
         HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_RESET);
 
         if (distance > 0)

@@ -1,0 +1,16 @@
+../Core/Src/stepper.c:18:13:axis_assign_pins	4	static
+../Core/Src/stepper.c:45:6:Stepper_Init	16	static
+../Core/Src/stepper.c:72:6:Stepper_Enable	16	static
+../Core/Src/stepper.c:80:6:Stepper_EnableAll	24	static
+../Core/Src/stepper.c:85:6:Stepper_SetMaxSpeed	16	static
+../Core/Src/stepper.c:90:6:Stepper_SetAcceleration	16	static
+../Core/Src/stepper.c:95:6:Stepper_MoveTo	16	static,ignoring_inline_asm
+../Core/Src/stepper.c:102:6:Stepper_MoveRelative	16	static,ignoring_inline_asm
+../Core/Src/stepper.c:109:6:Stepper_Stop	16	static,ignoring_inline_asm
+../Core/Src/stepper.c:116:6:Stepper_EmergencyStopAll	16	static,ignoring_inline_asm
+../Core/Src/stepper.c:127:6:Stepper_IsMoving	16	static
+../Core/Src/stepper.c:132:6:Stepper_AllIdle	16	static
+../Core/Src/stepper.c:139:9:Stepper_GetPosition	16	static
+../Core/Src/stepper.c:144:6:Stepper_SetPosition	16	static,ignoring_inline_asm
+../Core/Src/stepper.c:158:6:Stepper_RampUpdate_1kHz	32	static
+../Core/Src/stepper.c:210:6:Stepper_PulseUpdate_20kHz	16	static

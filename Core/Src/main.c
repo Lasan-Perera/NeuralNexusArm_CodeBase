@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <math.h>
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -74,6 +75,8 @@ typedef struct {
     GPIO_TypeDef* DIR_Port;
     uint16_t DIR_Pin;
 
+    bool pulsePending;   // STEP pin is HIGH, needs clearing at start of next tick
+
 } Stepper_t;
 
 Stepper_t motors[6];
@@ -93,6 +96,7 @@ static void MX_SDMMC1_SD_Init(void);
 static void MX_SPI3_Init(void);
 /* USER CODE BEGIN PFP */
 void Stepper_InitAll(void);
+void Stepper_SetEnableM1M2M3(bool enable);
 void Stepper_Update(Stepper_t *m);
 void Stepper_MoveAll(int32_t steps[6]);
 uint8_t Stepper_AnyMoving(void);
@@ -144,14 +148,16 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM2_Init();
   MX_USB_DEVICE_Init();
-  MX_SDMMC1_SD_Init();
+//  MX_SDMMC1_SD_Init();
   MX_SPI3_Init();
-  MX_FATFS_Init();
+//  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   Stepper_InitAll();
+  Stepper_SetEnableM1M2M3(false);   // enable M1, M2, M3 drivers before moving
   HAL_TIM_Base_Start_IT(&htim6);
 
-  int32_t moveSteps[6] = {6000, 1500, 1000, 4000, 12000, 5000};
+//  {2,3,0,6,4,5}
+  int32_t moveSteps[6] = {0, 1000, -500, 0, 0, 0};
   Stepper_MoveAll(moveSteps);
 
   /* USER CODE END 2 */
@@ -161,7 +167,7 @@ int main(void)
   while (1)
   {
 	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	  HAL_Delay(500);
+	  HAL_Delay(100);
 
     /* USER CODE END WHILE */
 
@@ -648,11 +654,18 @@ static void MX_GPIO_Init(void)
                           |M1_Dir_Pin|M2_Dir_Pin|M4_Dir_Pin|M5_Dir_Pin
                           |M6_Dir_Pin|M3_Dir_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : M3_Step_Pin M4_Step_Pin M5_Step_Pin M6_Step_Pin
-                           M1_Step_Pin M2_Step_Pin */
-  GPIO_InitStruct.Pin = M3_Step_Pin|M4_Step_Pin|M5_Step_Pin|M6_Step_Pin
-                          |M1_Step_Pin|M2_Step_Pin;
+  /*Configure GPIO pins : M4_Step_Pin M5_Step_Pin M6_Step_Pin
+                           (TMC2209, direct 3.3V push-pull - unchanged) */
+  GPIO_InitStruct.Pin = M4_Step_Pin|M5_Step_Pin|M6_Step_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : M1_Step_Pin M2_Step_Pin M3_Step_Pin
+                           (CL57T/TB6600, common-anode wiring -> open-drain) */
+  GPIO_InitStruct.Pin = M1_Step_Pin|M2_Step_Pin|M3_Step_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
@@ -664,11 +677,18 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M1_EN_Pin M2_EN_Pin M3_EN_Pin M4_EN_Pin
-                           M5_EN_Pin M6_EN_Pin */
-  GPIO_InitStruct.Pin = M1_EN_Pin|M2_EN_Pin|M3_EN_Pin|M4_EN_Pin
-                          |M5_EN_Pin|M6_EN_Pin;
+  /*Configure GPIO pins : M4_EN_Pin M5_EN_Pin M6_EN_Pin
+                           (TMC2209, direct 3.3V push-pull - unchanged) */
+  GPIO_InitStruct.Pin = M4_EN_Pin|M5_EN_Pin|M6_EN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : M1_EN_Pin M2_EN_Pin M3_EN_Pin
+                           (CL57T/TB6600, common-anode wiring -> open-drain) */
+  GPIO_InitStruct.Pin = M1_EN_Pin|M2_EN_Pin|M3_EN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
@@ -693,11 +713,18 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M6_ENC_CS_Pin M1_Dir_Pin M2_Dir_Pin M4_Dir_Pin
-                           M5_Dir_Pin M6_Dir_Pin M3_Dir_Pin */
-  GPIO_InitStruct.Pin = M6_ENC_CS_Pin|M1_Dir_Pin|M2_Dir_Pin|M4_Dir_Pin
-                          |M5_Dir_Pin|M6_Dir_Pin|M3_Dir_Pin;
+  /*Configure GPIO pins : M6_ENC_CS_Pin M4_Dir_Pin M5_Dir_Pin M6_Dir_Pin
+                           (TMC2209, direct 3.3V push-pull - unchanged) */
+  GPIO_InitStruct.Pin = M6_ENC_CS_Pin|M4_Dir_Pin|M5_Dir_Pin|M6_Dir_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : M1_Dir_Pin M2_Dir_Pin M3_Dir_Pin
+                           (CL57T/TB6600, common-anode wiring -> open-drain) */
+  GPIO_InitStruct.Pin = M1_Dir_Pin|M2_Dir_Pin|M3_Dir_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
@@ -728,6 +755,38 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief Drive EN for M1-M3 (CL57T x2 + TB6600, all wired common-anode:
+ *        EN+ tied to external +5V, EN- to this open-drain GPIO pin).
+ *
+ *        Open-drain behavior: GPIO_PIN_RESET (LOW) actively sinks current
+ *        -> opto LED conducts. GPIO_PIN_SET (HIGH) releases the pin
+ *        (Hi-Z) -> no current path -> opto LED off.
+ *
+ *        IMPORTANT - polarity is a best guess from datasheets, not yet
+ *        verified on your bench:
+ *          - CL57T (M1, M2): spec implies LED CONDUCTING = enabled.
+ *            -> drive LOW to enable.
+ *          - TB6600 (M3): spec implies LED CONDUCTING = "EN valid" =
+ *            motor FREE/disabled (opposite convention).
+ *            -> drive HIGH (released) to enable.
+ *
+ *        TEST THIS: with the motor powered and enabled per the logic
+ *        below, you should NOT be able to easily turn the shaft by hand
+ *        (holding torque present). If it spins freely instead, that
+ *        axis's polarity is backwards - flip the corresponding line below.
+ */
+void Stepper_SetEnableM1M2M3(bool enable)
+{
+    // CL57T x2 (M1, M2): LOW = enabled
+    HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    HAL_GPIO_WritePin(M2_EN_GPIO_Port, M2_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
+
+    // TB6600 (M3): HIGH (released) = enabled - opposite of M1/M2
+    HAL_GPIO_WritePin(M3_EN_GPIO_Port, M3_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}
+
 void Stepper_InitAll(void)
 {
     // Motor 1
@@ -772,11 +831,12 @@ void Stepper_InitAll(void)
         motors[i].target = 0;  // no motion until Stepper_MoveAll() is called
 
         motors[i].speed = 0;
-        motors[i].maxSpeed = 4000;
+        motors[i].maxSpeed = 500;
         motors[i].acceleration = 4000;
 
         motors[i].stepInterval = 1000;
         motors[i].stepCounter = 0;
+        motors[i].pulsePending = false;
     }
 }
 
@@ -808,6 +868,16 @@ uint8_t Stepper_AnyMoving(void)
 
 void Stepper_Update(Stepper_t *m)
 {
+    /* Finish whatever pulse was started on the PREVIOUS tick first.
+     * This guarantees every HIGH pulse lasts one full 20us tick (50kHz
+     * TIM6) instead of a hand-tuned busy-wait that was only ~1-2us -
+     * below the minimum pulse width the drivers need. */
+    if (m->pulsePending)
+    {
+        HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_RESET);
+        m->pulsePending = false;
+    }
+
     if (m->position == m->target) return;
 
     int32_t distance = m->target - m->position;
@@ -845,8 +915,7 @@ void Stepper_Update(Stepper_t *m)
         m->stepCounter = 0;
 
         HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_SET);
-        for (volatile int i = 0; i < 200; i++);
-        HAL_GPIO_WritePin(m->STEP_Port, m->STEP_Pin, GPIO_PIN_RESET);
+        m->pulsePending = true; /* cleared at the START of the next tick, not here */
 
         if (distance > 0)
             m->position++;

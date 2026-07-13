@@ -80,6 +80,19 @@ typedef struct {
 } Stepper_t;
 
 Stepper_t motors[6];
+
+/* ---- Per-joint configuration, all in JOINT order J1..J6 (base -> tip) ---- */
+
+/* Which motors[] slot physically drives each joint. VERIFY by test. */
+const uint8_t jointToMotor[6] = { 2, 0, 1, 4, 3, 5 };
+
+/* Direction sign per joint (+1 normal, -1 to reverse). Tune when testing. */
+const int8_t  jointDir[6]     = { 1, 1, -1, 1, 1, 1 };
+
+/* Per-joint speed & acceleration (steps/s and steps/s^2). Tune each link. */
+const float   jointMaxSpeed[6] = { 500, 500, 500, 500, 500, 500 };
+const float   jointAccel[6]    = { 500, 500, 500, 500, 500, 500 };
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -99,6 +112,7 @@ void Stepper_InitAll(void);
 void Stepper_SetEnableM1M2M3(bool enable);
 void Stepper_Update(Stepper_t *m);
 void Stepper_MoveAll(int32_t steps[6]);
+void Stepper_MoveAllJoints(int32_t jointSteps[6]);
 uint8_t Stepper_AnyMoving(void);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 
@@ -136,6 +150,15 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  HAL_PWREx_EnableUSBVoltageDetector();
+
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
+  PeriphClkInit.UsbClockSelection    = RCC_USBCLKSOURCE_HSI48;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+	  Error_Handler();
+  }
 
   /* USER CODE END SysInit */
 
@@ -156,9 +179,9 @@ int main(void)
   Stepper_SetEnableM1M2M3(false);   // enable M1, M2, M3 drivers before moving
   HAL_TIM_Base_Start_IT(&htim6);
 
-//  {2,3,0,6,4,5}
-  int32_t moveSteps[6] = {0, 1000, -500, 0, 0, 0};
-  Stepper_MoveAll(moveSteps);
+  // Test: move ONE joint at a time to verify mapping/direction.
+  int32_t jointSteps[6] = {0, 0, 0, 300, 500, 1000};   // should move J1 (Base) only
+  Stepper_MoveAllJoints(jointSteps);
 
   /* USER CODE END 2 */
 
@@ -167,7 +190,7 @@ int main(void)
   while (1)
   {
 	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	  HAL_Delay(100);
+	  HAL_Delay(500);
 
     /* USER CODE END WHILE */
 
@@ -198,8 +221,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 5;
@@ -654,17 +678,8 @@ static void MX_GPIO_Init(void)
                           |M1_Dir_Pin|M2_Dir_Pin|M4_Dir_Pin|M5_Dir_Pin
                           |M6_Dir_Pin|M3_Dir_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : M4_Step_Pin M5_Step_Pin M6_Step_Pin
-                           (TMC2209, direct 3.3V push-pull - unchanged) */
-  GPIO_InitStruct.Pin = M4_Step_Pin|M5_Step_Pin|M6_Step_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : M1_Step_Pin M2_Step_Pin M3_Step_Pin
-                           (CL57T/TB6600, common-anode wiring -> open-drain) */
-  GPIO_InitStruct.Pin = M1_Step_Pin|M2_Step_Pin|M3_Step_Pin;
+  /*Configure GPIO pins : M3_Step_Pin M1_Step_Pin M2_Step_Pin */
+  GPIO_InitStruct.Pin = M3_Step_Pin|M1_Step_Pin|M2_Step_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -677,18 +692,23 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M4_EN_Pin M5_EN_Pin M6_EN_Pin
-                           (TMC2209, direct 3.3V push-pull - unchanged) */
-  GPIO_InitStruct.Pin = M4_EN_Pin|M5_EN_Pin|M6_EN_Pin;
+  /*Configure GPIO pins : M4_Step_Pin M5_Step_Pin M6_Step_Pin */
+  GPIO_InitStruct.Pin = M4_Step_Pin|M5_Step_Pin|M6_Step_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : M1_EN_Pin M2_EN_Pin M3_EN_Pin */
+  GPIO_InitStruct.Pin = M1_EN_Pin|M2_EN_Pin|M3_EN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M1_EN_Pin M2_EN_Pin M3_EN_Pin
-                           (CL57T/TB6600, common-anode wiring -> open-drain) */
-  GPIO_InitStruct.Pin = M1_EN_Pin|M2_EN_Pin|M3_EN_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  /*Configure GPIO pins : M4_EN_Pin M5_EN_Pin M6_EN_Pin */
+  GPIO_InitStruct.Pin = M4_EN_Pin|M5_EN_Pin|M6_EN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
@@ -713,18 +733,9 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M6_ENC_CS_Pin M4_Dir_Pin M5_Dir_Pin M6_Dir_Pin
-                           (TMC2209, direct 3.3V push-pull - unchanged) */
+  /*Configure GPIO pins : M6_ENC_CS_Pin M4_Dir_Pin M5_Dir_Pin M6_Dir_Pin */
   GPIO_InitStruct.Pin = M6_ENC_CS_Pin|M4_Dir_Pin|M5_Dir_Pin|M6_Dir_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : M1_Dir_Pin M2_Dir_Pin M3_Dir_Pin
-                           (CL57T/TB6600, common-anode wiring -> open-drain) */
-  GPIO_InitStruct.Pin = M1_Dir_Pin|M2_Dir_Pin|M3_Dir_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
@@ -735,6 +746,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : M1_Dir_Pin M2_Dir_Pin M3_Dir_Pin */
+  GPIO_InitStruct.Pin = M1_Dir_Pin|M2_Dir_Pin|M3_Dir_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI3_CS_Pin M1_MS1_Pin M1_MS2_Pin M2_MS1_Pin */
   GPIO_InitStruct.Pin = SPI3_CS_Pin|M1_MS1_Pin|M1_MS2_Pin|M2_MS1_Pin;
@@ -783,7 +801,7 @@ void Stepper_SetEnableM1M2M3(bool enable)
     HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
     HAL_GPIO_WritePin(M2_EN_GPIO_Port, M2_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
 
-    // TB6600 (M3): HIGH (released) = enabled - opposite of M1/M2
+    // DM542 (M3): HIGH (released) = enabled - opposite of M1/M2
     HAL_GPIO_WritePin(M3_EN_GPIO_Port, M3_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
@@ -825,19 +843,20 @@ void Stepper_InitAll(void)
     motors[5].DIR_Port  = M6_Dir_GPIO_Port;
     motors[5].DIR_Pin   = M6_Dir_Pin;
 
-    for (int i = 0; i < 6; i++)
-    {
-        motors[i].position = 0;
-        motors[i].target = 0;  // no motion until Stepper_MoveAll() is called
+    for (int j = 0; j < 6; j++)
+        {
+            uint8_t m = jointToMotor[j];
+            motors[m].position     = 0;
+            motors[m].target       = 0;
 
-        motors[i].speed = 0;
-        motors[i].maxSpeed = 500;
-        motors[i].acceleration = 4000;
+            motors[m].speed        = 0;
+            motors[m].maxSpeed     = jointMaxSpeed[j];   // per-joint now
+            motors[m].acceleration = jointAccel[j];      // per-joint now
 
-        motors[i].stepInterval = 1000;
-        motors[i].stepCounter = 0;
-        motors[i].pulsePending = false;
-    }
+            motors[m].stepInterval = 1000;
+            motors[m].stepCounter  = 0;
+            motors[m].pulsePending = false;
+        }
 }
 
 /**
@@ -854,6 +873,15 @@ void Stepper_MoveAll(int32_t steps[6])
     }
 }
 
+/* Command all axes in JOINT order J1..J6. Handles wiring order + direction. */
+void Stepper_MoveAllJoints(int32_t jointSteps[6])
+{
+    for (int j = 0; j < 6; j++)
+    {
+        uint8_t m = jointToMotor[j];
+        motors[m].target = motors[m].position + jointDir[j] * jointSteps[j];
+    }
+}
 /**
  * @brief Returns 1 if any axis still has steps left to complete.
  */
@@ -973,10 +1001,11 @@ void MPU_Config(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
+    HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+    for (volatile int i = 0; i < 400000; i++);   // fast blink (busy-wait, since IRQs are off)
   }
   /* USER CODE END Error_Handler_Debug */
 }

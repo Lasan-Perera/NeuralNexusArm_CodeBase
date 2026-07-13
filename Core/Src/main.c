@@ -87,7 +87,7 @@ Stepper_t motors[6];
 /* ---- Per-joint configuration, all in JOINT order J1..J6 (base -> tip) ---- */
 
 const uint8_t jointToMotor[6] = { 2, 0, 1, 4, 3, 5 };   // identity: slot j -> Mj+1
-const int8_t  jointDir[6]     = { 1, 1, 1, 1, 1, 1 };   // all positive for now
+const int8_t  jointDir[6]     = { -1, -1, -1, -1, -1, 1 };   // all positive for now
 
 /* Per-joint speed & acceleration (steps/s and steps/s^2). Tune each link. */
 const float   jointMaxSpeed[6] = { 150, 150, 150, 150, 150, 150 };

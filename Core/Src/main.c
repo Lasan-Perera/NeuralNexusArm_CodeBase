@@ -25,6 +25,9 @@
 /* USER CODE BEGIN Includes */
 #include <math.h>
 #include <stdbool.h>
+#include "usbd_cdc_if.h"
+#include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -83,16 +86,23 @@ Stepper_t motors[6];
 
 /* ---- Per-joint configuration, all in JOINT order J1..J6 (base -> tip) ---- */
 
-/* Which motors[] slot physically drives each joint. VERIFY by test. */
-const uint8_t jointToMotor[6] = { 2, 0, 1, 4, 3, 5 };
-
-/* Direction sign per joint (+1 normal, -1 to reverse). Tune when testing. */
-const int8_t  jointDir[6]     = { 1, 1, -1, 1, 1, 1 };
+const uint8_t jointToMotor[6] = { 2, 0, 1, 4, 3, 5 };   // identity: slot j -> Mj+1
+const int8_t  jointDir[6]     = { 1, 1, 1, 1, 1, 1 };   // all positive for now
 
 /* Per-joint speed & acceleration (steps/s and steps/s^2). Tune each link. */
-const float   jointMaxSpeed[6] = { 500, 500, 500, 500, 500, 500 };
-const float   jointAccel[6]    = { 500, 500, 500, 500, 500, 500 };
+const float   jointMaxSpeed[6] = { 150, 150, 150, 150, 150, 150 };
+const float   jointAccel[6]    = { 150, 150, 150, 150, 150, 150 };
 
+/* Pulses per JOINT revolution (pulses/motor-rev × gear ratio), J1..J6 */
+const float pulsesPerJointRev[6] = { 2800, 5000, 5000, 1600, 1600, 1600 };
+
+/* Joint angle offsets (deg): software zero -> your CAD/model zero.
+   J3 and J5 live on the 180°-centered band, so subtract 180 here. */
+const float jointOffsetDeg[6] = { 0, 0, 180, 0, 180, 0 };
+
+
+extern volatile uint8_t rxFlag;
+extern char rxTemp[128];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -180,8 +190,8 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim6);
 
   // Test: move ONE joint at a time to verify mapping/direction.
-  int32_t jointSteps[6] = {0, 0, 0, 300, 500, 1000};   // should move J1 (Base) only
-  Stepper_MoveAllJoints(jointSteps);
+//  int32_t jointSteps[6] = {0, 0, 0, 0, 0, 0};   // should move J1 (Base) only
+//  Stepper_MoveAllJoints(jointSteps);
 
   /* USER CODE END 2 */
 
@@ -189,8 +199,43 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	  HAL_Delay(500);
+
+	  if (rxFlag)
+	  {
+		rxFlag = 0;
+
+		float ang[6] = {0};
+		int n = sscanf(rxTemp, "%f,%f,%f,%f,%f,%f",
+					   &ang[0], &ang[1], &ang[2],
+					   &ang[3], &ang[4], &ang[5]);
+
+		if (n == 6)
+		{
+		  int32_t jointSteps[6];
+		  for (int j = 0; j < 6; j++)
+		  {
+			float a = ang[j];
+			jointSteps[j] = (int32_t)lroundf(pulsesPerJointRev[j] * a / 360.0f);
+		  }
+		  for (int k = 0; k < 6; k++) motors[k].position = 0;   // treat every command as a fresh delta
+		  Stepper_MoveAllJoints(jointSteps);                   // MOVE
+
+
+		  char reply[128];
+		  int len = snprintf(reply, sizeof(reply),
+			  "steps: %ld %ld %ld %ld %ld %ld\r\n",
+			  (long)jointSteps[0], (long)jointSteps[1], (long)jointSteps[2],
+			  (long)jointSteps[3], (long)jointSteps[4], (long)jointSteps[5]);
+		  CDC_Transmit_FS((uint8_t*)reply, len);
+		  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+		}
+		else
+		{
+		  char reply[64];
+		  int len = snprintf(reply, sizeof(reply), "ERR got %d values\r\n", n);
+		  CDC_Transmit_FS((uint8_t*)reply, len);
+		}
+	  }
 
     /* USER CODE END WHILE */
 

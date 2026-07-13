@@ -22,7 +22,8 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include <string.h>
+#include <stdio.h>
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +32,10 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-
+volatile uint8_t rxFlag = 0;
+char     rxLine[128];        // holds the completed line
+uint8_t  rxIndex = 0;        // write position in the buffer
+char     rxTemp[128];        // scratch: latest completed line for main to read
 /* USER CODE END PV */
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY
@@ -261,6 +265,24 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  for (uint32_t i = 0; i < *Len; i++)
+  {
+    char c = (char)Buf[i];
+    if (c == '\n' || c == '\r')      // end of line
+    {
+      if (rxIndex > 0)
+      {
+        rxLine[rxIndex] = '\0';      // terminate the string
+        strcpy(rxTemp, rxLine);      // hand the finished line to main
+        rxFlag = 1;                  // signal "line ready"
+        rxIndex = 0;
+      }
+    }
+    else if (rxIndex < sizeof(rxLine) - 1)
+    {
+      rxLine[rxIndex++] = c;         // accumulate the character
+    }
+  }
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);

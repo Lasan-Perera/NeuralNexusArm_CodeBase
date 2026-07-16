@@ -86,15 +86,22 @@ Stepper_t motors[6];
 
 /* ---- Per-joint configuration, all in JOINT order J1..J6 (base -> tip) ---- */
 
-const uint8_t jointToMotor[6] = { 2, 0, 1, 4, 3, 5 };   // identity: slot j -> Mj+1
-const int8_t  jointDir[6]     = { -1, -1, -1, -1, -1, 1 };   // all positive for now
+/* Joint (base -> tip) to motor-slot mapping. motors[] is 0-indexed: M1=0 .. M6=5.
+ *   J1 Base rotation   -> M6 -> motors[5]
+ *   J2 2nd link        -> M4 -> motors[3]
+ *   J3 3rd link        -> M5 -> motors[4]
+ *   J4 4th joint       -> M2 -> motors[1]
+ *   J5 5th joint       -> M1 -> motors[0]
+ *   J6 End effector rot-> M3 -> motors[2]                                     */
+const uint8_t jointToMotor[6] = { 5, 3, 4, 1, 0, 2 };
+const int8_t  jointDir[6]     = { 1, 1, 1, 1, 1, 1 };   // all positive for now
 
 /* Per-joint speed & acceleration (steps/s and steps/s^2). Tune each link. */
 const float   jointMaxSpeed[6] = { 150, 150, 150, 150, 150, 150 };
 const float   jointAccel[6]    = { 150, 150, 150, 150, 150, 150 };
 
 /* Pulses per JOINT revolution (pulses/motor-rev × gear ratio), J1..J6 */
-const float pulsesPerJointRev[6] = { 2800, 5000, 5000, 1600, 1600, 1600 };
+const float pulsesPerJointRev[6] = { 2800, 1000, 5000, 1600, 1600, 1600 };
 
 /* Joint angle offsets (deg): software zero -> your CAD/model zero.
    J3 and J5 live on the 180°-centered band, so subtract 180 here. */
@@ -120,11 +127,13 @@ static void MX_SPI3_Init(void);
 /* USER CODE BEGIN PFP */
 void Stepper_InitAll(void);
 void Stepper_SetEnableM1M2M3(bool enable);
+void Stepper_SetEnableM4M5M6(bool enable);
 void Stepper_Update(Stepper_t *m);
 void Stepper_MoveAll(int32_t steps[6]);
 void Stepper_MoveAllJoints(int32_t jointSteps[6]);
 uint8_t Stepper_AnyMoving(void);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+void Buzzer_SetFreq(uint32_t freq);
 
 /* USER CODE END PFP */
 
@@ -186,12 +195,16 @@ int main(void)
 //  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   Stepper_InitAll();
-  Stepper_SetEnableM1M2M3(false);   // enable M1, M2, M3 drivers before moving
+  Stepper_SetEnableM1M2M3(true);   // enable M1, M2, M3 (onboard TMC2209) drivers before moving
+  Stepper_SetEnableM4M5M6(false);   // enable M4, M5, M6 (external CL57T/CL57T/DM542) drivers before moving
   HAL_TIM_Base_Start_IT(&htim6);
 
   // Test: move ONE joint at a time to verify mapping/direction.
-//  int32_t jointSteps[6] = {0, 0, 0, 0, 0, 0};   // should move J1 (Base) only
-//  Stepper_MoveAllJoints(jointSteps);
+
+  int32_t jointSteps[6] = {0, 0, 0, 0, 0, 500};
+  Stepper_MoveAllJoints(jointSteps);
+
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
 
   /* USER CODE END 2 */
 
@@ -199,6 +212,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  /* --- PE0/PE1/PE2 comparison test: all three should read 3.3V --- */
+	  while (1)
+	  {
+//	      HAL_GPIO_WritePin(M1_Step_GPIO_Port, M1_Step_Pin, GPIO_PIN_SET);   // PE0 - suspect
+//	      HAL_GPIO_WritePin(M2_Step_GPIO_Port, M2_Step_Pin, GPIO_PIN_SET);   // PE1 - known good
+//	      HAL_GPIO_WritePin(M3_Step_GPIO_Port, M3_Step_Pin, GPIO_PIN_SET);   // PE2 - known good
+	  }
 
 	  if (rxFlag)
 	  {
@@ -708,7 +728,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, M3_Step_Pin|LED_Pin|M4_Step_Pin|M5_Step_Pin
-                          |M6_Step_Pin|M1_Step_Pin|M2_Step_Pin, GPIO_PIN_RESET);
+                          |M6_Step_Pin|M2_Step_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, M1_EN_Pin|M2_EN_Pin|M3_EN_Pin|M4_EN_Pin
@@ -716,16 +736,15 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, M1_ENC_CS_Pin|M2_ENC_CS_Pin|M3_ENC_CS_Pin|SPI3_CS_Pin
-                          |RGB_DIN_Pin|M1_MS1_Pin|M1_MS2_Pin|M2_MS1_Pin, GPIO_PIN_RESET);
+                          |RGB_DIN_Pin|M1_Step_Pin|M4_Dir_Pin|M2_MS1_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, M2_MS2_Pin|M3_MS1_Pin|M3_MS2_Pin|M6_ENC_CS_Pin
-                          |M1_Dir_Pin|M2_Dir_Pin|M4_Dir_Pin|M5_Dir_Pin
-                          |M6_Dir_Pin|M3_Dir_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, M2_MS2_Pin|M3_MS1_Pin|M3_Dir_Pin|M6_ENC_CS_Pin
+                          |M1_Dir_Pin|M2_Dir_Pin|M5_Dir_Pin|M6_Dir_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : M3_Step_Pin M1_Step_Pin M2_Step_Pin */
-  GPIO_InitStruct.Pin = M3_Step_Pin|M1_Step_Pin|M2_Step_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  /*Configure GPIO pins : M3_Step_Pin M2_Step_Pin */
+  GPIO_InitStruct.Pin = M3_Step_Pin|M2_Step_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
@@ -739,27 +758,29 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : M4_Step_Pin M5_Step_Pin M6_Step_Pin */
   GPIO_InitStruct.Pin = M4_Step_Pin|M5_Step_Pin|M6_Step_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /*Configure GPIO pins : M1_EN_Pin M2_EN_Pin M3_EN_Pin */
   GPIO_InitStruct.Pin = M1_EN_Pin|M2_EN_Pin|M3_EN_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : M4_EN_Pin M5_EN_Pin M6_EN_Pin */
   GPIO_InitStruct.Pin = M4_EN_Pin|M5_EN_Pin|M6_EN_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M1_ENC_CS_Pin M2_ENC_CS_Pin M3_ENC_CS_Pin RGB_DIN_Pin */
-  GPIO_InitStruct.Pin = M1_ENC_CS_Pin|M2_ENC_CS_Pin|M3_ENC_CS_Pin|RGB_DIN_Pin;
+  /*Configure GPIO pins : M1_ENC_CS_Pin M2_ENC_CS_Pin M3_ENC_CS_Pin RGB_DIN_Pin
+                           M1_Step_Pin */
+  GPIO_InitStruct.Pin = M1_ENC_CS_Pin|M2_ENC_CS_Pin|M3_ENC_CS_Pin|RGB_DIN_Pin
+                          |M1_Step_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -771,15 +792,17 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M2_MS2_Pin M3_MS1_Pin M3_MS2_Pin */
-  GPIO_InitStruct.Pin = M2_MS2_Pin|M3_MS1_Pin|M3_MS2_Pin;
+  /*Configure GPIO pin : M2_MS2_Pin */
+  GPIO_InitStruct.Pin = M2_MS2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  HAL_GPIO_Init(M2_MS2_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M6_ENC_CS_Pin M4_Dir_Pin M5_Dir_Pin M6_Dir_Pin */
-  GPIO_InitStruct.Pin = M6_ENC_CS_Pin|M4_Dir_Pin|M5_Dir_Pin|M6_Dir_Pin;
+  /*Configure GPIO pins : M3_MS1_Pin M3_Dir_Pin M6_ENC_CS_Pin M1_Dir_Pin
+                           M2_Dir_Pin */
+  GPIO_InitStruct.Pin = M3_MS1_Pin|M3_Dir_Pin|M6_ENC_CS_Pin|M1_Dir_Pin
+                          |M2_Dir_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -792,19 +815,26 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : M1_Dir_Pin M2_Dir_Pin M3_Dir_Pin */
-  GPIO_InitStruct.Pin = M1_Dir_Pin|M2_Dir_Pin|M3_Dir_Pin;
+  /*Configure GPIO pins : M5_Dir_Pin M6_Dir_Pin */
+  GPIO_InitStruct.Pin = M5_Dir_Pin|M6_Dir_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SPI3_CS_Pin M1_MS1_Pin M1_MS2_Pin M2_MS1_Pin */
-  GPIO_InitStruct.Pin = SPI3_CS_Pin|M1_MS1_Pin|M1_MS2_Pin|M2_MS1_Pin;
+  /*Configure GPIO pins : SPI3_CS_Pin M2_MS1_Pin */
+  GPIO_InitStruct.Pin = SPI3_CS_Pin|M2_MS1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : M4_Dir_Pin */
+  GPIO_InitStruct.Pin = M4_Dir_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(M4_Dir_GPIO_Port, &GPIO_InitStruct);
 
   /*AnalogSwitch Config */
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE);
@@ -818,6 +848,23 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/* Set buzzer tone frequency (Hz) on TIM2_CH2 / PA1. freq=0 -> silent. */
+void Buzzer_SetFreq(uint32_t freq)
+{
+    if (freq == 0) {
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);
+        return;
+    }
+    uint32_t timClk = HAL_RCC_GetPCLK1Freq() * 2;   // TIM2 kernel clock
+    uint32_t psc    = (timClk / 1000000u) - 1;      // counter ticks at 1 MHz
+    uint32_t arr    = (1000000u / freq) - 1;
+
+    __HAL_TIM_SET_PRESCALER(&htim2, psc);
+    __HAL_TIM_SET_AUTORELOAD(&htim2, arr);
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, arr / 2);   // 50% duty
+    htim2.Instance->EGR = TIM_EGR_UG;               // load new PSC/ARR now
+}
 
 /**
  * @brief Drive EN for M1-M3 (CL57T x2 + TB6600, all wired common-anode:
@@ -842,12 +889,27 @@ static void MX_GPIO_Init(void)
  */
 void Stepper_SetEnableM1M2M3(bool enable)
 {
-    // CL57T x2 (M1, M2): LOW = enabled
+    // Onboard TMC2209 x3 (M1, M2, M3): EN is active-LOW (LOW = driver enabled).
+    // All three now share identical push-pull, active-low polarity - if any
+    // single axis still doesn't lock after this change, flip only that line.
     HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
     HAL_GPIO_WritePin(M2_EN_GPIO_Port, M2_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
-
-    // DM542 (M3): HIGH (released) = enabled - opposite of M1/M2
     HAL_GPIO_WritePin(M3_EN_GPIO_Port, M3_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}
+
+/**
+ * @brief Enable/disable M4-M6 external drivers (open-drain, common-anode).
+ *        M4, M5 = CL57T (NEMA24): LOW = enabled.
+ *        M6 = DM542 (NEMA23): HIGH (released) = enabled - opposite of M4/M5.
+ *        Same polarity logic that used to live on M1-M3 before those moved
+ *        to the onboard TMC2209s - verify on hardware, one axis at a time,
+ *        same as the original M1-M3 bring-up.
+ */
+void Stepper_SetEnableM4M5M6(bool enable)
+{
+    HAL_GPIO_WritePin(M4_EN_GPIO_Port, M4_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    HAL_GPIO_WritePin(M5_EN_GPIO_Port, M5_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    HAL_GPIO_WritePin(M6_EN_GPIO_Port, M6_EN_Pin, enable ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
 void Stepper_InitAll(void)

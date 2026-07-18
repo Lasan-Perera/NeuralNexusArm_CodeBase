@@ -124,6 +124,16 @@ float encAngle[6] = {0};      /* latest encoder angle per joint, degrees */
 uint16_t encRawPrev[6] = {0};      // last raw 14-bit reading per joint
 int32_t  encTicks[6]   = {0};      // cumulative signed ticks per joint
 uint8_t  encInit[6]    = {0};      // has the first reading been taken?
+
+int32_t  motorEncTicks[6]  = {0};   // cumulative signed ticks, indexed by MOTOR
+uint16_t motorEncRaw[6]    = {0};   // last raw reading, per motor
+uint8_t  motorEncInit[6]   = {0};   // first-read flag, per motor
+
+#define CAP_MAX 10000
+int32_t  capTicks[CAP_MAX][6];   // encoder ticks per sample, per motor
+uint16_t capCount = 0;           // how many samples captured
+uint8_t  capturing = 0;          // 1 while recording
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -157,6 +167,7 @@ void Encoder_UpdateTicks(uint8_t j);
 void Gripper_Init(void);
 void Gripper_Open(void);
 void Gripper_Close(void);
+void Motor_UpdateEncoder(uint8_t m);
 
 /* USER CODE END PFP */
 
@@ -230,8 +241,8 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   Gripper_Init();
 
-//  for (uint8_t j = 0; j < 6; j++)
-//        HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);   // all CS idle high
+  for (uint8_t j = 0; j < 6; j++)
+        HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);   // all CS idle high
 //
 //    while (1)
 //    {
@@ -250,6 +261,8 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint32_t lastEncPrint = 0;
+
   while (1)
   {
 //	  while(1){
@@ -259,41 +272,40 @@ int main(void)
 //	  }
 
 	  if (rxFlag)
-	  {
-		rxFlag = 0;
-
-		float ang[6] = {0};
-		int n = sscanf(rxTemp, "%f,%f,%f,%f,%f,%f",
-					   &ang[0], &ang[1], &ang[2],
-					   &ang[3], &ang[4], &ang[5]);
-
-		if (n == 6)
 		{
-		  int32_t jointSteps[6];
-		  for (int j = 0; j < 6; j++)
-		  {
-			float a = ang[j];
-			jointSteps[j] = (int32_t)lroundf(pulsesPerJointRev[j] * a / 360.0f);
-		  }
-		  for (int k = 0; k < 6; k++) motors[k].position = 0;   // treat every command as a fresh delta
-		  Stepper_MoveAllJoints(jointSteps);                   // MOVE
+			rxFlag = 0;
+			float ang[6] = {0};
+			int n = sscanf(rxTemp, "%f,%f,%f,%f,%f,%f",
+						   &ang[0],&ang[1],&ang[2],&ang[3],&ang[4],&ang[5]);
+			if (n == 6)
+			{
+				int32_t jointSteps[6];
+				for (int j = 0; j < 6; j++)
+					jointSteps[j] = (int32_t)lroundf(pulsesPerJointRev[j] * ang[j] / 360.0f);
+				for (int k = 0; k < 6; k++) motors[k].position = 0;
 
-
-		  char reply[128];
-		  int len = snprintf(reply, sizeof(reply),
-			  "steps: %ld %ld %ld %ld %ld %ld\r\n",
-			  (long)jointSteps[0], (long)jointSteps[1], (long)jointSteps[2],
-			  (long)jointSteps[3], (long)jointSteps[4], (long)jointSteps[5]);
-		  CDC_Transmit_FS((uint8_t*)reply, len);
-		  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+				capCount = 0;           // reset buffer
+				capturing = 1;          // start recording
+				Stepper_MoveAllJoints(jointSteps);
+			}
 		}
-		else
+
+		// when motion finishes, stop capturing and dump the whole buffer
+		if (capturing && !Stepper_AnyMoving())
 		{
-		  char reply[64];
-		  int len = snprintf(reply, sizeof(reply), "ERR got %d values\r\n", n);
-		  CDC_Transmit_FS((uint8_t*)reply, len);
+			capturing = 0;
+			for (uint16_t r = 0; r < capCount; r++)
+			{
+				char msg[96];
+				int len = snprintf(msg, sizeof(msg),
+					"%u,%ld,%ld,%ld,%ld,%ld,%ld\r\n", r,
+					(long)capTicks[r][0],(long)capTicks[r][1],(long)capTicks[r][2],
+					(long)capTicks[r][3],(long)capTicks[r][4],(long)capTicks[r][5]);
+				CDC_Transmit_FS((uint8_t*)msg, len);
+				HAL_Delay(2);           // let each USB packet flush
+			}
+			CDC_Transmit_FS((uint8_t*)"END\r\n", 5);
 		}
-	  }
 
     /* USER CODE END WHILE */
 
@@ -317,7 +329,7 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
@@ -329,13 +341,13 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 5;
-  RCC_OscInitStruct.PLL.PLLN = 168;
+  RCC_OscInitStruct.PLL.PLLM = 2;
+  RCC_OscInitStruct.PLL.PLLN = 12;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 13;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
   RCC_OscInitStruct.PLL.PLLR = 2;
-  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
-  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_3;
+  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOMEDIUM;
   RCC_OscInitStruct.PLL.PLLFRACN = 0;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -349,13 +361,13 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV2;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
-  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV1;
+  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -415,7 +427,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -657,9 +669,9 @@ static void MX_TIM6_Init(void)
 
   /* USER CODE END TIM6_Init 1 */
   htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 0;
+  htim6.Init.Prescaler = 74;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 4199;
+  htim6.Init.Period = 499;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
   {
@@ -886,6 +898,32 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/* Read the encoder on motor m and update its cumulative tick count.
+   Safe to call from the TIM6 ISR at 2 kHz (short SPI timeout). */
+void Motor_UpdateEncoder(uint8_t m)
+{
+    // find which joint uses this motor, to reach its CS pin
+    int8_t j = -1;
+    for (uint8_t k = 0; k < 6; k++) if (jointToMotor[k] == m) { j = k; break; }
+    if (j < 0) return;
+
+    uint16_t cmd = 0xFFFF, rx = 0;
+    HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_RESET);
+    HAL_StatusTypeDef st = HAL_SPI_TransmitReceive(&hspi1, (uint8_t*)&cmd, (uint8_t*)&rx, 1, 2); // 2ms max
+    HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);
+
+    if (st != HAL_OK || (rx & 0x4000)) return;      // bad read or error flag -> skip
+    uint16_t raw = rx & 0x3FFF;
+
+    if (!motorEncInit[m]) { motorEncRaw[m] = raw; motorEncInit[m] = 1; return; }
+
+    int32_t d = (int32_t)raw - (int32_t)motorEncRaw[m];
+    if (d >  8192) d -= 16384;
+    if (d < -8192) d += 16384;
+    motorEncTicks[m] += d;
+    motorEncRaw[m] = raw;
+}
 
 /* Configure TIM2 for servo use: 1 us tick, 20 ms (50 Hz) period, start CH1 */
 void Gripper_Init(void)
@@ -1147,7 +1185,7 @@ void Stepper_Update(Stepper_t *m)
     HAL_GPIO_WritePin(m->DIR_Port, m->DIR_Pin,
                       (distance > 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-    float dt = 0.00002f; /* matches TIM6 now reconfigured to 50kHz */
+    float dt = 0.0005f; /* matches TIM6 now reconfigured to 50kHz */
 
     float stepsToStop = (m->speed * m->speed) / (2.0f * m->acceleration);
 
@@ -1167,7 +1205,7 @@ void Stepper_Update(Stepper_t *m)
     }
 
     if (m->speed > 0)
-        m->stepInterval = (uint32_t)(50000.0f / m->speed);
+        m->stepInterval = (uint32_t)(2000.0f / m->speed);
 
     m->stepCounter++;
 
@@ -1189,10 +1227,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
-        for (int i = 0; i < 6; i++)
-        {
-            Stepper_Update(&motors[i]);
-        }
+    	for (int i = 0; i < 6; i++)
+		{
+			Stepper_Update(&motors[i]);
+			Motor_UpdateEncoder(i);        // <-- read this motor's encoder each tick
+		}
+
+    	if (capturing && capCount < CAP_MAX)
+		{
+			for (int i = 0; i < 6; i++) capTicks[capCount][i] = motorEncTicks[i];
+			capCount++;
+		}
     }
 }
 

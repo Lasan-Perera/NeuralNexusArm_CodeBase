@@ -101,7 +101,7 @@ const float   jointMaxSpeed[6] = { 150, 150, 150, 150, 150, 150 };
 const float   jointAccel[6]    = { 150, 150, 150, 150, 150, 150 };
 
 /* Pulses per JOINT revolution (pulses/motor-rev × gear ratio), J1..J6 */
-const float pulsesPerJointRev[6] = { 2800, 1000, 5000, 1600, 1600, 1600 };
+const float pulsesPerJointRev[6] = { 2800, 5000, 5000, 6400, 1600, 1600 };
 
 /* Joint angle offsets (deg): software zero -> your CAD/model zero.
    J3 and J5 live on the 180°-centered band, so subtract 180 here. */
@@ -110,6 +110,20 @@ const float jointOffsetDeg[6] = { 0, 0, 180, 0, 180, 0 };
 
 extern volatile uint8_t rxFlag;
 extern char rxTemp[128];
+
+/* Encoder CS pin per JOINT (J1..J6) */
+GPIO_TypeDef* encCSPort[6] = { M6_ENC_CS_GPIO_Port, M4_ENC_CS_GPIO_Port,
+                               M5_ENC_CS_GPIO_Port, M2_ENC_CS_GPIO_Port,
+                               M1_ENC_CS_GPIO_Port, M3_ENC_CS_GPIO_Port };
+const uint16_t encCSPin[6]  = { M6_ENC_CS_Pin, M4_ENC_CS_Pin,
+                                M5_ENC_CS_Pin, M2_ENC_CS_Pin,
+                                M1_ENC_CS_Pin, M3_ENC_CS_Pin };
+
+float encAngle[6] = {0};      /* latest encoder angle per joint, degrees */
+
+uint16_t encRawPrev[6] = {0};      // last raw 14-bit reading per joint
+int32_t  encTicks[6]   = {0};      // cumulative signed ticks per joint
+uint8_t  encInit[6]    = {0};      // has the first reading been taken?
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -134,6 +148,15 @@ void Stepper_MoveAllJoints(int32_t jointSteps[6]);
 uint8_t Stepper_AnyMoving(void);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 void Buzzer_SetFreq(uint32_t freq);
+void AS5047P_ClearError(void);
+float AS5047P_ReadJoint(uint8_t j);
+void  Encoders_ReadAll(void);
+void AS5047P_ClearErrorCS(uint8_t j);
+uint16_t AS5047P_ReadRaw(uint8_t j);
+void Encoder_UpdateTicks(uint8_t j);
+void Gripper_Init(void);
+void Gripper_Open(void);
+void Gripper_Close(void);
 
 /* USER CODE END PFP */
 
@@ -201,10 +224,27 @@ int main(void)
 
   // Test: move ONE joint at a time to verify mapping/direction.
 
-  int32_t jointSteps[6] = {0, 0, 0, 0, 0, 500};
+  int32_t jointSteps[6] = {0, 0, 0, 0, 0, 0};
   Stepper_MoveAllJoints(jointSteps);
 
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+  Gripper_Init();
+
+//  for (uint8_t j = 0; j < 6; j++)
+//        HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);   // all CS idle high
+//
+//    while (1)
+//    {
+//        for (uint8_t j = 0; j < 6; j++) Encoder_UpdateTicks(j);
+//
+//        char msg[128];
+//        int len = snprintf(msg, sizeof(msg),
+//            "ticks | J1:%ld  J2:%ld  J3:%ld  J4:%ld  J5:%ld  J6:%ld\r\n",
+//            (long)encTicks[0], (long)encTicks[1], (long)encTicks[2],
+//            (long)encTicks[3], (long)encTicks[4], (long)encTicks[5]);
+//        CDC_Transmit_FS((uint8_t*)msg, len);
+//        HAL_Delay(50);
+//    }
 
   /* USER CODE END 2 */
 
@@ -212,13 +252,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /* --- PE0/PE1/PE2 comparison test: all three should read 3.3V --- */
-	  while (1)
-	  {
-//	      HAL_GPIO_WritePin(M1_Step_GPIO_Port, M1_Step_Pin, GPIO_PIN_SET);   // PE0 - suspect
-//	      HAL_GPIO_WritePin(M2_Step_GPIO_Port, M2_Step_Pin, GPIO_PIN_SET);   // PE1 - known good
-//	      HAL_GPIO_WritePin(M3_Step_GPIO_Port, M3_Step_Pin, GPIO_PIN_SET);   // PE2 - known good
-	  }
+//	  while(1){
+//		  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+//		  HAL_Delay(500);   // 500 ms on, 500 ms off → 1 Hz blink
+//
+//	  }
 
 	  if (rxFlag)
 	  {
@@ -377,7 +415,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -848,6 +886,94 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/* Configure TIM2 for servo use: 1 us tick, 20 ms (50 Hz) period, start CH1 */
+void Gripper_Init(void)
+{
+    uint32_t timClk = HAL_RCC_GetPCLK1Freq() * 2;      // TIM2 kernel clock
+    __HAL_TIM_SET_PRESCALER(&htim2, (timClk / 1000000u) - 1);  // 1 MHz tick
+    __HAL_TIM_SET_AUTORELOAD(&htim2, 20000 - 1);               // 20 ms frame
+    htim2.Instance->EGR = TIM_EGR_UG;
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+}
+
+/* Set servo pulse width in microseconds (typical range 1000-2000) */
+static void Gripper_SetPulse(uint16_t us)
+{
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, us);
+}
+
+void Gripper_Open(void)  { Gripper_SetPulse(1000); }   // tune this value
+void Gripper_Close(void) { Gripper_SetPulse(2000); }   // tune this value
+
+/* Read raw 14-bit count for joint j. Returns 0xFFFF on error. */
+uint16_t AS5047P_ReadRaw(uint8_t j)
+{
+    uint16_t cmd = 0xFFFF, rx = 0;
+    for (int attempt = 0; attempt < 3; attempt++)
+    {
+        HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_RESET);
+        HAL_SPI_TransmitReceive(&hspi1, (uint8_t*)&cmd, (uint8_t*)&rx, 1, 100);
+        HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);
+        if (!(rx & 0x4000)) return (rx & 0x3FFF);
+        AS5047P_ClearErrorCS(j);
+    }
+    return 0xFFFF;
+}
+
+/* Update cumulative signed tick counter for joint j (handles 0/16384 wrap).
+   +ve = increasing raw count, -ve = decreasing. */
+void Encoder_UpdateTicks(uint8_t j)
+{
+    uint16_t raw = AS5047P_ReadRaw(j);
+    if (raw == 0xFFFF) return;                 // bad read, skip
+
+    if (!encInit[j]) { encRawPrev[j] = raw; encInit[j] = 1; return; }
+
+    int32_t d = (int32_t)raw - (int32_t)encRawPrev[j];
+    if (d >  8192) d -= 16384;                 // wrapped downward through 0
+    if (d < -8192) d += 16384;                 // wrapped upward through max
+    encTicks[j] += d;
+    encRawPrev[j] = raw;
+}
+
+void AS5047P_ClearErrorCS(uint8_t j)
+{
+    uint16_t cmd = 0x4001, rx;
+    HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_RESET);
+    HAL_SPI_TransmitReceive(&hspi1, (uint8_t*)&cmd, (uint8_t*)&rx, 1, 100);
+    HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);
+    HAL_Delay(1);
+    cmd = 0xFFFF;
+    HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_RESET);
+    HAL_SPI_TransmitReceive(&hspi1, (uint8_t*)&cmd, (uint8_t*)&rx, 1, 100);
+    HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);
+}
+
+/* Read encoder for joint j (0..5). Returns degrees, or -1 on error. */
+float AS5047P_ReadJoint(uint8_t j)
+{
+    uint16_t cmd = 0xFFFF, rx = 0;
+    for (int attempt = 0; attempt < 3; attempt++)
+    {
+        HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_RESET);
+        HAL_SPI_TransmitReceive(&hspi1, (uint8_t*)&cmd, (uint8_t*)&rx, 1, 100);
+        HAL_GPIO_WritePin(encCSPort[j], encCSPin[j], GPIO_PIN_SET);
+
+        if (!(rx & 0x4000))
+            return ((rx & 0x3FFF) * 360.0f) / 16384.0f;
+
+        AS5047P_ClearErrorCS(j);
+    }
+    return -1.0f;
+}
+
+/* Read all six into encAngle[] */
+void Encoders_ReadAll(void)
+{
+    for (uint8_t j = 0; j < 6; j++)
+        encAngle[j] = AS5047P_ReadJoint(j);
+}
 
 /* Set buzzer tone frequency (Hz) on TIM2_CH2 / PA1. freq=0 -> silent. */
 void Buzzer_SetFreq(uint32_t freq)

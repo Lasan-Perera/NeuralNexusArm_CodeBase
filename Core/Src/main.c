@@ -94,10 +94,10 @@ Stepper_t motors[6];
  *   J5 5th joint       -> M1 -> motors[0]
  *   J6 End effector rot-> M3 -> motors[2]                                     */
 const uint8_t jointToMotor[6] = { 5, 3, 4, 1, 0, 2 };
-const int8_t  jointDir[6]     = { 1, 1, 1, 1, 1, 1 };   // all positive for now
+const int8_t  jointDir[6]     = { -1, 1, -1, 1, 1, 1 };   // all positive for now
 
 /* Per-joint speed & acceleration (steps/s and steps/s^2). Tune each link. */
-const float   jointMaxSpeed[6] = { 150, 150, 150, 150, 150, 150 };
+const float   jointMaxSpeed[6] = { 400, 400, 400, 400, 400, 400 };
 const float   jointAccel[6]    = { 150, 150, 150, 150, 150, 150 };
 
 /* Pulses per JOINT revolution (pulses/motor-rev × gear ratio), J1..J6 */
